@@ -1,0 +1,163 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RetailerType {
+  target
+  walmart
+  cvs
+  walgreens
+  gamestop
+  local_card_shop
+  other
+}
+
+enum ProductType {
+  etb
+  booster_bundle
+  booster_box
+  collection_box
+  tin
+  mini_tin
+  blister
+  other
+}
+
+enum ProductIdentifierType {
+  upc
+  retailer_sku
+  alias
+  normalized_name
+  retailer_url
+}
+
+enum ReportStatus {
+  in_stock
+  low_stock
+  sold_out
+  unknown
+}
+
+enum ReportSource {
+  user
+  scraper
+  admin
+}
+
+enum ReportUpdateStatus {
+  still_there
+  gone
+  restocked
+  incorrect
+}
+
+enum AdminStatus {
+  pending
+  matched
+  ignored
+}
+
+model Store {
+  id           String       @id @default(cuid())
+  name         String
+  retailerType RetailerType
+  address      String
+  latitude     Float
+  longitude    Float
+  placeId      String?
+  reports      Report[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([latitude, longitude])
+  @@index([retailerType])
+}
+
+model Product {
+  id               String              @id @default(cuid())
+  canonicalName    String
+  setName          String?
+  productType      ProductType
+  imageUrl         String?
+  active           Boolean             @default(true)
+  identifiers      ProductIdentifier[]
+  reports          Report[]
+  unmatchedReports UnmatchedReport[]
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([canonicalName])
+  @@index([setName])
+  @@index([active])
+}
+
+model ProductIdentifier {
+  id        String                @id @default(cuid())
+  productId String
+  product   Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
+  type      ProductIdentifierType
+  value     String
+  source    String?
+  createdAt DateTime              @default(now())
+
+  @@unique([type, value])
+  @@index([productId])
+}
+
+model Report {
+  id                String            @id @default(cuid())
+  storeId           String
+  store             Store             @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  productId         String?
+  product           Product?          @relation(fields: [productId], references: [id], onDelete: SetNull)
+  rawProductText    String?
+  rawPrice          String?
+  quantityObserved  Int?
+  status            ReportStatus
+  photoUrl          String?
+  source            ReportSource      @default(user)
+  matchConfidence   Float?
+  matchMethod       String?
+  createdBy         String?
+  createdAt         DateTime          @default(now())
+  expiresAt         DateTime?
+  updates           ReportUpdate[]
+  unmatchedReport   UnmatchedReport?
+
+  @@index([storeId, createdAt])
+  @@index([productId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ReportUpdate {
+  id        String             @id @default(cuid())
+  reportId  String
+  report    Report             @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  status    ReportUpdateStatus
+  createdBy String?
+  createdAt DateTime           @default(now())
+
+  @@index([reportId, createdAt])
+}
+
+model UnmatchedReport {
+  id               String      @id @default(cuid())
+  reportId         String      @unique
+  report           Report      @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  rawProductText   String
+  photoUrl         String?
+  adminStatus      AdminStatus @default(pending)
+  matchedProductId String?
+  matchedProduct   Product?    @relation(fields: [matchedProductId], references: [id], onDelete: SetNull)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  @@index([adminStatus])
+  @@index([createdAt])
+}
