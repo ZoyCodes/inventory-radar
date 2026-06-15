@@ -53,16 +53,120 @@ test("report update stores contributor ID", { skip: !hasDatabase }, async () => 
     storeId: "store-target-colonie",
     rawProductText: "151 booster bundle",
     status: "in_stock",
-    createdBy: "anon_same_browser"
+    createdBy: "anon_original_browser"
   });
 
-  const update = await createReportUpdate({
+  const result = await createReportUpdate({
     reportId: report.id,
     status: "still_there",
     createdBy: "anon_same_browser"
   });
 
-  assert.equal(update.createdBy, "anon_same_browser");
+  assert.equal(result.changed, true);
+  assert.equal(result.update?.createdBy, "anon_same_browser");
+});
+
+test("duplicate gone does not create extra ReportUpdate", { skip: !hasDatabase }, async () => {
+  await resetPrismaDb();
+
+  const report = await createReport({
+    storeId: "store-target-colonie",
+    rawProductText: "151 booster bundle",
+    status: "in_stock",
+    createdBy: "anon_reporter_a"
+  });
+
+  const first = await createReportUpdate({
+    reportId: report.id,
+    status: "gone",
+    createdBy: "anon_reporter_b"
+  });
+  const second = await createReportUpdate({
+    reportId: report.id,
+    status: "gone",
+    createdBy: "anon_reporter_c"
+  });
+  const snapshot = await getSnapshot();
+  const updatedReport = snapshot.reports.find((candidate) => candidate.id === report.id);
+
+  assert.equal(first.changed, true);
+  assert.equal(second.changed, false);
+  assert.equal(second.reason, "already_sold_out");
+  assert.equal(updatedReport?.updates.length, 1);
+});
+
+test("duplicate still_there within cooldown does not create extra ReportUpdate", { skip: !hasDatabase }, async () => {
+  await resetPrismaDb();
+
+  const report = await createReport({
+    storeId: "store-target-colonie",
+    rawProductText: "151 booster bundle",
+    status: "in_stock",
+    createdBy: "anon_reporter_a"
+  });
+
+  const first = await createReportUpdate({
+    reportId: report.id,
+    status: "still_there",
+    createdBy: "anon_reporter_b"
+  });
+  const second = await createReportUpdate({
+    reportId: report.id,
+    status: "still_there",
+    createdBy: "anon_reporter_b"
+  });
+  const snapshot = await getSnapshot();
+  const updatedReport = snapshot.reports.find((candidate) => candidate.id === report.id);
+
+  assert.equal(first.changed, true);
+  assert.equal(second.changed, false);
+  assert.equal(second.reason, "duplicate_update_cooldown");
+  assert.equal(updatedReport?.updates.length, 1);
+});
+
+test("still_there immediately after own report is no-op", { skip: !hasDatabase }, async () => {
+  await resetPrismaDb();
+
+  const report = await createReport({
+    storeId: "store-target-colonie",
+    rawProductText: "151 booster bundle",
+    status: "in_stock",
+    createdBy: "anon_same_browser"
+  });
+
+  const result = await createReportUpdate({
+    reportId: report.id,
+    status: "still_there",
+    createdBy: "anon_same_browser"
+  });
+  const snapshot = await getSnapshot();
+  const updatedReport = snapshot.reports.find((candidate) => candidate.id === report.id);
+
+  assert.equal(result.changed, false);
+  assert.equal(result.reason, "own_report_confirmation_cooldown");
+  assert.equal(updatedReport?.updates.length, 0);
+});
+
+test("restocked after sold_out updates report status to in_stock", { skip: !hasDatabase }, async () => {
+  await resetPrismaDb();
+
+  const report = await createReport({
+    storeId: "store-target-colonie",
+    rawProductText: "151 booster bundle",
+    status: "sold_out",
+    createdBy: "anon_reporter_a"
+  });
+
+  const result = await createReportUpdate({
+    reportId: report.id,
+    status: "restocked",
+    createdBy: "anon_reporter_b"
+  });
+  const snapshot = await getSnapshot();
+  const updatedReport = snapshot.reports.find((candidate) => candidate.id === report.id);
+
+  assert.equal(result.changed, true);
+  assert.equal(updatedReport?.status, "in_stock");
 });
 
 test("admin matching attaches product without saving alias by default", { skip: !hasDatabase }, async () => {

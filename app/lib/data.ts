@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { buildEvidenceSummaries, type EvidenceSummary } from "./evidence";
 import { matchProduct } from "./matching";
 import { prisma } from "./prisma";
 import { cleanAlias, RequestValidationError } from "./request-validation";
@@ -25,6 +26,7 @@ export type Snapshot = {
   products: Product[];
   reports: EnrichedReport[];
   recentReports: EnrichedReport[];
+  evidenceSummaries: EvidenceSummary[];
   unmatchedCount: number;
   metrics: {
     reportsSubmitted: number;
@@ -61,12 +63,14 @@ export async function getSnapshot(): Promise<Snapshot> {
   ]);
 
   const enrichedReports = reports.map(toEnrichedReport);
+  const evidenceSummaries = buildEvidenceSummaries(enrichedReports);
 
   return {
     stores: stores.map(toStore),
     products: products.map(toProduct),
     reports: enrichedReports,
     recentReports: enrichedReports.slice(0, 20),
+    evidenceSummaries,
     unmatchedCount,
     metrics
   };
@@ -161,14 +165,66 @@ export async function createReportUpdate(input: {
   createdBy?: string | null;
 }) {
   return prisma.$transaction(async (tx) => {
-    const report = await tx.report.findUnique({ where: { id: input.reportId } });
+    const createdBy = normalizeContributorId(input.createdBy);
+    const now = new Date();
+    const cooldownStart = new Date(now.getTime() - 30 * 60 * 1000);
+    const report = await tx.report.findUnique({
+      where: { id: input.reportId },
+      include: {
+        updates: {
+          where: {
+            createdBy,
+            status: input.status,
+            createdAt: { gte: cooldownStart }
+          },
+          orderBy: { createdAt: "desc" },
+          take: 1
+        }
+      }
+    });
     if (!report) throw new RequestValidationError("Report not found.", 404);
+
+    if (
+      input.status === "still_there"
+      && report.createdBy === createdBy
+      && report.createdAt >= cooldownStart
+    ) {
+      return {
+        changed: false,
+        update: null,
+        reason: "own_report_confirmation_cooldown" as const
+      };
+    }
+
+    if (report.updates.length > 0) {
+      return {
+        changed: false,
+        update: null,
+        reason: "duplicate_update_cooldown" as const
+      };
+    }
+
+    if (report.status === "sold_out" && input.status === "gone") {
+      return {
+        changed: false,
+        update: null,
+        reason: "already_sold_out" as const
+      };
+    }
+
+    if (report.status === "sold_out" && input.status === "still_there") {
+      return {
+        changed: false,
+        update: null,
+        reason: "sold_out_confirmation_blocked" as const
+      };
+    }
 
     const update = await tx.reportUpdate.create({
       data: {
         reportId: input.reportId,
         status: input.status,
-        createdBy: normalizeContributorId(input.createdBy)
+        createdBy
       }
     });
 
@@ -179,7 +235,11 @@ export async function createReportUpdate(input: {
       });
     }
 
-    return toReportUpdate(update);
+    return {
+      changed: true,
+      update: toReportUpdate(update),
+      reason: null
+    };
   });
 }
 

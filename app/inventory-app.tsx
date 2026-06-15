@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { Snapshot } from "./lib/data";
+import type { EvidenceSummary } from "./lib/evidence";
 import type { EnrichedReport, ReportStatus, ReportUpdateStatus, Store } from "./lib/types";
 
 type ReportForm = {
@@ -42,6 +43,7 @@ export default function InventoryApp() {
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [form, setForm] = useState<ReportForm>(emptyForm);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState("");
 
   useEffect(() => {
     loadSnapshot();
@@ -61,6 +63,16 @@ export default function InventoryApp() {
     });
     return map;
   }, [snapshot?.reports]);
+
+  const evidenceByStore = useMemo(() => {
+    const map = new Map<string, EvidenceSummary[]>();
+    snapshot?.evidenceSummaries.forEach((summary) => {
+      const summaries = map.get(summary.storeId) ?? [];
+      summaries.push(summary);
+      map.set(summary.storeId, summaries);
+    });
+    return map;
+  }, [snapshot?.evidenceSummaries]);
 
   const filteredStores = useMemo(() => {
     if (!snapshot) return [];
@@ -108,11 +120,21 @@ export default function InventoryApp() {
   }
 
   async function sendReportUpdate(reportId: string, status: ReportUpdateStatus) {
-    await fetch("/api/report-updates", {
+    setUpdateNotice("");
+    const response = await fetch("/api/report-updates", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reportId, status, createdBy: getContributorId() })
     });
+    const result = await response.json() as { changed?: boolean; reason?: string | null };
+    if (!response.ok) {
+      setUpdateNotice("Unable to add that update right now.");
+      return;
+    }
+    if (result.changed === false) {
+      setUpdateNotice(noOpMessage(result.reason));
+      return;
+    }
     await loadSnapshot();
   }
 
@@ -126,6 +148,7 @@ export default function InventoryApp() {
   }
 
   const selectedReports = selectedStore ? reportsByStore.get(selectedStore.id) ?? [] : [];
+  const selectedEvidence = selectedStore ? evidenceByStore.get(selectedStore.id) ?? [] : [];
 
   return (
     <main className="app-shell">
@@ -209,6 +232,14 @@ export default function InventoryApp() {
               </div>
 
               <div className="report-stack">
+                {selectedEvidence.length ? (
+                  selectedEvidence.map((summary) => (
+                    <EvidenceCard key={summary.evidenceKey} summary={summary} />
+                  ))
+                ) : null}
+
+                {updateNotice ? <p className="update-notice">{updateNotice}</p> : null}
+
                 {selectedReports.length ? (
                   selectedReports.map((report) => (
                     <ReportCard
@@ -481,6 +512,51 @@ function ReportCard({
   );
 }
 
+function EvidenceCard({ summary }: { summary: EvidenceSummary }) {
+  return (
+    <article className={`evidence-card ${summary.evidenceStatus}`}>
+      <div className="evidence-heading">
+        <div>
+          <strong>{summary.productName ?? summary.rawProductText ?? "Unknown Pokemon product"}</strong>
+          <p>{statusLabel(summary.evidenceStatus)}</p>
+        </div>
+        <span>{summary.distinctContributorCount} {countLabel(summary.distinctContributorCount, "contributor")}</span>
+      </div>
+
+      <dl className="evidence-facts">
+        <div>
+          <dt>First spotted</dt>
+          <dd>{timeAgo(summary.firstSpottedAt)}</dd>
+        </div>
+        <div>
+          <dt>Last checked</dt>
+          <dd>{timeAgo(summary.lastActivityAt)}</dd>
+        </div>
+        <div>
+          <dt>Confirmations</dt>
+          <dd>{summary.confirmationCount}</dd>
+        </div>
+        <div>
+          <dt>Gone reports</dt>
+          <dd>{summary.goneCount}</dd>
+        </div>
+      </dl>
+
+      <ol className="evidence-timeline">
+        {summary.timelineEvents.map((event) => (
+          <li key={`${event.reportId}-${event.reportUpdateId ?? "initial"}`}>
+            <span className={`timeline-dot ${event.type}`} />
+            <div>
+              <strong>{event.displayLabel}</strong>
+              <p>{timeAgo(event.createdAt)} · {formatAbsoluteTime(event.createdAt)}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </article>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: number }) {
   return (
     <div className="metric">
@@ -510,12 +586,41 @@ function formatStatus(value: ReportStatus) {
   return value.replaceAll("_", " ");
 }
 
+function statusLabel(value: EvidenceSummary["evidenceStatus"]) {
+  if (value === "likely_in_stock") return "Likely in stock";
+  if (value === "recently_seen") return "Recently seen";
+  if (value === "mixed_reports") return "Mixed reports";
+  if (value === "likely_gone") return "Likely gone";
+  return "Stale";
+}
+
 function timeAgo(value: string) {
   const minutes = Math.max(1, Math.round((Date.now() - Date.parse(value)) / 60000));
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
+}
+
+function formatAbsoluteTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function countLabel(count: number, label: string) {
+  return count === 1 ? label : `${label}s`;
+}
+
+function noOpMessage(reason?: string | null) {
+  if (reason === "own_report_confirmation_cooldown") return "No new evidence added yet.";
+  if (reason === "duplicate_update_cooldown") return "That update was already noted recently.";
+  if (reason === "already_sold_out") return "This sighting is already marked gone.";
+  if (reason === "sold_out_confirmation_blocked") return "A restock report is needed before confirming this again.";
+  return "No new evidence added.";
 }
 
 function stripDollar(value: string) {

@@ -221,7 +221,7 @@ test("public report updates reject bad payloads and rate limit spam", { skip: !h
     statuses.push(response.status);
   }
 
-  assert.equal(statuses.slice(0, 30).every((status) => status === 201), true);
+  assert.equal(statuses.slice(0, 30).every((status) => status === 200), true);
   assert.equal(statuses[30], 429);
 });
 

@@ -30,12 +30,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Too many report updates. Try again later." }, { status: 429 });
     }
 
-    const update = await createReportUpdate({
+    const result = await createReportUpdate({
       reportId: requireString(body, "reportId", { maxLength: 80, pattern: /^[a-zA-Z0-9_-]+$/ }),
       status: parseReportUpdateStatus(body),
       createdBy
     });
-    return NextResponse.json(update, { status: 201 });
+    const responseBody = result.changed && result.update ? { ...result.update, ...result } : result;
+    return NextResponse.json(responseBody, { status: result.changed ? 201 : 200 });
   } catch (error) {
     if (error instanceof RequestValidationError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
